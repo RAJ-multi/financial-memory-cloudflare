@@ -107,7 +107,8 @@ export function mergeFinancialData(localInput, cloudInput) {
   const deletedSavingIds = uniqueIds([...local.deletedSavingIds, ...cloud.deletedSavingIds]);
   const deletedExpenses = new Set(deletedExpenseIds);
   const deletedSavings = new Set(deletedSavingIds);
-  const preferLocalSettings = local.settingsUpdatedAt >= cloud.settingsUpdatedAt;
+  // On equal/legacy timestamps prefer cloud settings, so a second device with default local preferences does not overwrite the account's settings.
+  const preferLocalSettings = local.settingsUpdatedAt > cloud.settingsUpdatedAt;
 
   return {
     version: 1,
@@ -187,7 +188,7 @@ function writeUserSnapshot(userId, data) {
 }
 
 function scheduleSync(delay = 700) {
-  if (!activeUserId || readyUserId !== activeUserId) return;
+  if (!activeUserId) return;
   if (syncTimer) clearTimeout(syncTimer);
   syncTimer = setTimeout(() => {
     syncTimer = null;
