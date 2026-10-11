@@ -38,6 +38,7 @@ import {
   signOut
 } from './auth.js';
 import { setupKeyboardShortcuts } from './shortcuts.js';
+import { initCloudSync, subscribeCloudSync, syncNow, getCloudSyncState } from './cloud-sync.js';
 
 let currentView = 'dashboard';
 let editingExpenseId = null;
@@ -80,6 +81,14 @@ export function initApp() {
       renderCurrentView();
     }
   });
+
+  // Keep the account panel updated as sync status changes.
+  subscribeCloudSync(() => {
+    if (currentView === 'settings') renderCurrentView();
+  });
+
+  // Start cloud sync listeners before restoring the Supabase session.
+  initCloudSync();
 
   // Initialize Supabase Auth session & listener
   initAuth();
@@ -218,7 +227,7 @@ function renderCurrentView() {
       bindSavingsEvents();
       break;
     case 'settings':
-      container.innerHTML = renderSettings(data, hasCustomWallpaper, currentWallpaperUrl, getAuthState());
+      container.innerHTML = renderSettings(data, hasCustomWallpaper, currentWallpaperUrl, getAuthState(), getCloudSyncState());
       bindSettingsEvents();
       break;
     default:
@@ -570,6 +579,18 @@ function bindSettingsEvents() {
       btnSignOut.textContent = 'Signing out...';
       await signOut();
       showToast('Signed out. Application is now in Guest mode.');
+      renderCurrentView();
+    });
+  }
+
+  const btnSyncNow = document.getElementById('btn-cloud-sync-now');
+  if (btnSyncNow) {
+    btnSyncNow.addEventListener('click', async () => {
+      btnSyncNow.disabled = true;
+      btnSyncNow.textContent = 'Syncing…';
+      const ok = await syncNow();
+      const state = getCloudSyncState();
+      showToast(ok ? 'Cloud sync completed.' : (state.error || 'Cloud sync failed. Local data is still available.'));
       renderCurrentView();
     });
   }

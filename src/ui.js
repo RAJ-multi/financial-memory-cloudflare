@@ -519,7 +519,7 @@ export function renderSavings(data, onEditSaving, onDeleteSaving) {
   `;
 }
 
-export function renderSettings(data, hasWallpaper = false, wallpaperUrl = null, authState = null) {
+export function renderSettings(data, hasWallpaper = false, wallpaperUrl = null, authState = null, cloudSyncState = null) {
   const currentBudget = data.settings.dailyBudget;
   const currentTheme = data.settings.theme || 'system';
   const currentPreset = data.settings.backgroundPreset || 'default';
@@ -533,6 +533,11 @@ export function renderSettings(data, hasWallpaper = false, wallpaperUrl = null, 
   const userAvatar = user?.user_metadata?.avatar_url || '';
   const authError = authState?.error || null;
   const isLoading = authState?.isLoading ?? false;
+  const syncState = cloudSyncState || {
+    status: isGuest ? 'guest' : 'checking',
+    message: isGuest ? 'Sign in with Google to enable cloud sync.' : 'Checking cloud sync…',
+    error: null
+  };
 
   return `
     <div class="page-header">
@@ -548,7 +553,7 @@ export function renderSettings(data, hasWallpaper = false, wallpaperUrl = null, 
         <div>
           <h2 style="font-size: 1.15rem; font-weight: 700; margin-bottom: 0.25rem;">Account & Cloud Sync</h2>
           <div style="font-size: 0.9rem; color: var(--text-secondary);">
-            Sign in with Google to authenticate your identity and prepare for cross-device cloud sync.
+            Sign in with Google to sync your expenses, savings, and settings across your devices.
           </div>
         </div>
         <div>
@@ -621,9 +626,15 @@ export function renderSettings(data, hasWallpaper = false, wallpaperUrl = null, 
               </button>
             </div>
           </div>
-          <div style="margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--border-color); font-size: 0.82rem; color: var(--text-muted); line-height: 1.4;">
-            ✓ Signed in via Google OAuth with Supabase Auth.<br/>
-            ℹ️ Cloud data synchronization has not been activated in this phase. Your local data remains available on this device.
+          <div style="margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--border-color); font-size: 0.84rem; color: var(--text-secondary); line-height: 1.45;">
+            <div>✓ Signed in via Google OAuth with Supabase Auth.</div>
+            <div style="margin-top: 0.4rem;"><strong>Cloud sync:</strong> ${escapeHtml(syncState.message || 'Checking cloud sync…')}</div>
+            ${syncState.error ? `<div style="margin-top: 0.35rem; color: var(--danger);">${escapeHtml(syncState.error)}</div>` : ''}
+            ${syncState.lastSyncedAt ? `<div style="margin-top: 0.35rem; font-size: 0.78rem; color: var(--text-muted);">Last synced: ${escapeHtml(new Date(syncState.lastSyncedAt).toLocaleString())}</div>` : ''}
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-cloud-sync-now" ${syncState.status === 'syncing' ? 'disabled' : ''} style="margin-top: 0.75rem;">
+              ${syncState.status === 'syncing' ? 'Syncing…' : 'Sync now'}
+            </button>
+            <div style="margin-top: 0.4rem; font-size: 0.78rem; color: var(--text-muted);">Your local copy remains available if cloud sync is offline.</div>
           </div>
         </div>
       `}
