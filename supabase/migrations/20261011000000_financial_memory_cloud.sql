@@ -10,7 +10,7 @@ create table if not exists public.financial_memory_cloud (
 
 alter table public.financial_memory_cloud enable row level security;
 
-revoke all on table public.financial_memory_cloud from anon;
+revoke all on table public.financial_memory_cloud from public, anon;
 grant select, insert, update, delete on table public.financial_memory_cloud to authenticated;
 
 drop policy if exists "Users can read their own financial data" on public.financial_memory_cloud;
