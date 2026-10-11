@@ -553,7 +553,7 @@ export function renderSettings(data, hasWallpaper = false, wallpaperUrl = null, 
         <div>
           <h2 style="font-size: 1.15rem; font-weight: 700; margin-bottom: 0.25rem;">Account & Cloud Sync</h2>
           <div style="font-size: 0.9rem; color: var(--text-secondary);">
-            Sign in with Google to authenticate your identity and prepare for cross-device cloud sync.
+            Sign in with Google to sync your expenses, savings, and settings across your devices.
           </div>
         </div>
         <div>
