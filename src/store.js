@@ -48,8 +48,11 @@ class Store {
       const initial = {
         version: 1,
         settings: { ...DEFAULT_SETTINGS },
+        settingsUpdatedAt: 0,
         expenses: [],
-        savings: []
+        savings: [],
+        deletedExpenseIds: [],
+        deletedSavingIds: []
       };
       this.saveData(initial);
       return initial;
@@ -65,8 +68,11 @@ class Store {
       const reset = {
         version: 1,
         settings: { ...DEFAULT_SETTINGS },
+        settingsUpdatedAt: 0,
         expenses: [],
-        savings: []
+        savings: [],
+        deletedExpenseIds: [],
+        deletedSavingIds: []
       };
       this.saveData(reset);
       return reset;
@@ -75,6 +81,9 @@ class Store {
 
   saveData(data) {
     const storage = getStorage();
+    if (!Number.isFinite(Number(data.settingsUpdatedAt))) data.settingsUpdatedAt = 0;
+    if (!Array.isArray(data.deletedExpenseIds)) data.deletedExpenseIds = [];
+    if (!Array.isArray(data.deletedSavingIds)) data.deletedSavingIds = [];
     storage.setItem(STORAGE_KEY, JSON.stringify(data));
     this.notify();
   }
@@ -86,6 +95,7 @@ class Store {
   updateSettings(partial) {
     const data = this.getData();
     data.settings = { ...data.settings, ...partial };
+    data.settingsUpdatedAt = Date.now();
     this.saveData(data);
     return data.settings;
   }
@@ -131,8 +141,10 @@ class Store {
       category,
       date,
       description: description.trim(),
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      updatedAt: Date.now()
     };
+    data.deletedExpenseIds = Array.isArray(data.deletedExpenseIds) ? data.deletedExpenseIds : [];
     data.expenses.push(newExpense);
     this.saveData(data);
     return newExpense;
@@ -159,7 +171,8 @@ class Store {
       amount: round2(amount),
       category,
       date,
-      description: description.trim()
+      description: description.trim(),
+      updatedAt: Date.now()
     };
     this.saveData(data);
     return data.expenses[idx];
@@ -170,6 +183,8 @@ class Store {
     const initialLen = data.expenses.length;
     data.expenses = data.expenses.filter(e => e.id !== id);
     if (data.expenses.length !== initialLen) {
+      data.deletedExpenseIds = Array.isArray(data.deletedExpenseIds) ? data.deletedExpenseIds : [];
+      if (!data.deletedExpenseIds.includes(id)) data.deletedExpenseIds.push(id);
       this.saveData(data);
       return true;
     }
@@ -195,8 +210,10 @@ class Store {
       amount: round2(amount),
       date,
       description: description.trim(),
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      updatedAt: Date.now()
     };
+    data.deletedSavingIds = Array.isArray(data.deletedSavingIds) ? data.deletedSavingIds : [];
     data.savings.push(newSaving);
     this.saveData(data);
     return newSaving;
@@ -219,7 +236,8 @@ class Store {
       ...data.savings[idx],
       amount: round2(amount),
       date,
-      description: description.trim()
+      description: description.trim(),
+      updatedAt: Date.now()
     };
     this.saveData(data);
     return data.savings[idx];
@@ -230,6 +248,8 @@ class Store {
     const initialLen = data.savings.length;
     data.savings = data.savings.filter(s => s.id !== id);
     if (data.savings.length !== initialLen) {
+      data.deletedSavingIds = Array.isArray(data.deletedSavingIds) ? data.deletedSavingIds : [];
+      if (!data.deletedSavingIds.includes(id)) data.deletedSavingIds.push(id);
       this.saveData(data);
       return true;
     }
@@ -251,8 +271,11 @@ class Store {
         backgroundPreset: preservedBackground,
         currency: preservedCurrency
       },
+      settingsUpdatedAt: Date.now(),
       expenses: [],
-      savings: []
+      savings: [],
+      deletedExpenseIds: [...new Set([...(current.deletedExpenseIds || []), ...current.expenses.map(item => item.id)])],
+      deletedSavingIds: [...new Set([...(current.deletedSavingIds || []), ...current.savings.map(item => item.id)])]
     };
     this.saveData(fresh);
     return fresh;
