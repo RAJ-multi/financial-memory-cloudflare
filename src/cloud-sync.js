@@ -344,7 +344,11 @@ function handleAuthState(authState) {
     syncTimer = null;
   }
 
-  if (readyUserId === userId || initializingUserId === userId || syncPromise) return;
+  if (readyUserId === userId || initializingUserId === userId) return;
+  if (syncPromise) {
+    rerunRequested = true;
+    return;
+  }
   initializingUserId = userId;
   void syncNow().finally(() => {
     if (initializingUserId === userId) initializingUserId = null;
