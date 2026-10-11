@@ -154,6 +154,38 @@ function writeSyncOwner(userId) {
   }
 }
 
+const memorySnapshots = new Map();
+
+function snapshotKey(userId) {
+  return `financial_memory_sync_snapshot_${userId}`;
+}
+
+function readUserSnapshot(userId) {
+  if (!userId) return null;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = window.localStorage.getItem(snapshotKey(userId));
+      if (raw) return normalizeFinancialData(JSON.parse(raw));
+    }
+  } catch {
+    // Fall back to the in-memory snapshot when storage is restricted or malformed.
+  }
+  return memorySnapshots.get(userId) || null;
+}
+
+function writeUserSnapshot(userId, data) {
+  if (!userId) return;
+  const snapshot = normalizeFinancialData(data);
+  memorySnapshots.set(userId, snapshot);
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(snapshotKey(userId), JSON.stringify(snapshot));
+    }
+  } catch {
+    // A failed snapshot must not prevent cloud sync or local storage from working.
+  }
+}
+
 function scheduleSync(delay = 700) {
   if (!activeUserId || readyUserId !== activeUserId) return;
   if (syncTimer) clearTimeout(syncTimer);
@@ -195,15 +227,18 @@ async function performSync(userId) {
   if (readError) throw readError;
   if (activeUserId !== userId) return false;
 
-  const localData = normalizeFinancialData(store.getData());
+  let localData = normalizeFinancialData(store.getData());
   const ownerId = readSyncOwner();
   let mergedData;
 
   if (ownerId && ownerId !== userId) {
-    // Never copy one signed-in account's local records into another account.
+    // Keep the previous account's local copy before switching account data.
+    writeUserSnapshot(ownerId, localData);
+    // Restore this account's last local snapshot (if any), never mix two users' data.
+    localData = readUserSnapshot(userId) || emptyFinancialData();
     mergedData = cloudRow?.payload
-      ? normalizeFinancialData(cloudRow.payload)
-      : emptyFinancialData();
+      ? mergeFinancialData(localData, cloudRow.payload)
+      : localData;
   } else if (cloudRow?.payload) {
     // On first sign-in, merge guest records into the account; on later syncs,
     // merge by stable IDs and carry tombstones so deletions propagate.
@@ -227,6 +262,7 @@ async function performSync(userId) {
   if (activeUserId !== userId) return false;
 
   writeSyncOwner(userId);
+  writeUserSnapshot(userId, mergedData);
   readyUserId = userId;
   const lastSyncedAt = new Date().toISOString();
   emitState({
