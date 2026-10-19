@@ -3,17 +3,14 @@ import { store } from './store.js';
 import { getSupabase, subscribeAuth } from './auth.js';
 
 const TABLE = 'financial_memory_cloud';
-const OWNER_KEY = 'financial_memory_sync_owner';
 
 let initialized = false;
 let activeUserId = null;
+let activeGeneration = 0;
 let readyUserId = null;
-let initializingUserId = null;
-let syncPromise = null;
-let rerunRequested = false;
+let activeOperation = null;
 let syncTimer = null;
 let applyingCloudData = false;
-let memoryOwner = null;
 let storeUnsubscribe = null;
 let authUnsubscribe = null;
 let visibilityEventsRegistered = false;
@@ -23,7 +20,8 @@ let syncState = {
   status: 'idle',
   message: 'Cloud sync has not started.',
   error: null,
-  lastSyncedAt: null
+  lastSyncedAt: null,
+  userId: null
 };
 
 function emitState(patch) {
@@ -35,6 +33,20 @@ function emitState(patch) {
       console.error('Cloud sync listener failed:', error);
     }
   }
+}
+
+function currentContext() {
+  return activeUserId ? { userId: activeUserId, generation: activeGeneration } : null;
+}
+
+function isCurrent(context) {
+  return Boolean(context) && activeUserId === context.userId && activeGeneration === context.generation;
+}
+
+function emitForContext(context, patch) {
+  if (!isCurrent(context)) return false;
+  emitState({ ...patch, userId: context.userId });
+  return true;
 }
 
 export function getCloudSyncState() {
@@ -66,6 +78,10 @@ function timestampOf(value) {
   return 0;
 }
 
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
 export function normalizeFinancialData(input) {
   const data = input && typeof input === 'object' ? input : {};
   const settings = data.settings && typeof data.settings === 'object' ? data.settings : {};
@@ -79,6 +95,41 @@ export function normalizeFinancialData(input) {
     deletedSavingIds: uniqueIds(data.deletedSavingIds),
     settingsUpdatedAt: timestampOf(data.settingsUpdatedAt)
   };
+}
+
+/**
+ * Validates a stored cloud payload before it can replace the selected account
+ * slot. Older payloads without deletion metadata are accepted, but an unknown
+ * version or a structurally incomplete/corrupt document is never normalized
+ * into an accidental empty account.
+ */
+export function validateFinancialDataPayload(payload) {
+  if (!isPlainObject(payload)) {
+    return { valid: false, error: 'Cloud payload must be an object.' };
+  }
+  if (payload.version !== undefined && payload.version !== 1) {
+    return { valid: false, error: 'Unsupported cloud payload version: ' + String(payload.version) + '.' };
+  }
+  if (!isPlainObject(payload.settings)) {
+    return { valid: false, error: 'Cloud payload is missing settings.' };
+  }
+
+  for (const field of ['expenses', 'savings']) {
+    if (!Array.isArray(payload[field])) {
+      return { valid: false, error: 'Cloud payload is missing ' + field + '.' };
+    }
+    if (!payload[field].every(item => isPlainObject(item) && typeof item.id === 'string' && item.id.length > 0)) {
+      return { valid: false, error: 'Cloud payload has an invalid ' + field + ' record.' };
+    }
+  }
+
+  for (const field of ['deletedExpenseIds', 'deletedSavingIds']) {
+    if (payload[field] !== undefined && (!Array.isArray(payload[field]) || !payload[field].every(id => typeof id === 'string' && id.length > 0))) {
+      return { valid: false, error: 'Cloud payload has invalid ' + field + '.' };
+    }
+  }
+
+  return { valid: true, data: normalizeFinancialData(payload) };
 }
 
 function mergeRecords(localRecords, cloudRecords, deletedIds) {
@@ -97,8 +148,9 @@ function mergeRecords(localRecords, cloudRecords, deletedIds) {
 }
 
 /**
- * Merge records by ID and preserve deletion tombstones so an item deleted on one
- * device does not reappear after that device syncs. Newer edits win by timestamp.
+ * Merges two copies of the same authenticated account. Guest data is never
+ * passed to this function by the lifecycle code. Deletion tombstones are
+ * preserved so an item deleted on one device does not reappear on another.
  */
 export function mergeFinancialData(localInput, cloudInput) {
   const local = normalizeFinancialData(localInput);
@@ -107,7 +159,8 @@ export function mergeFinancialData(localInput, cloudInput) {
   const deletedSavingIds = uniqueIds([...local.deletedSavingIds, ...cloud.deletedSavingIds]);
   const deletedExpenses = new Set(deletedExpenseIds);
   const deletedSavings = new Set(deletedSavingIds);
-  // On equal/legacy timestamps prefer cloud settings, so a second device with default local preferences does not overwrite the account's settings.
+  // On equal/legacy timestamps prefer cloud settings, so a second device with
+  // default local preferences does not overwrite the account's settings.
   const preferLocalSettings = local.settingsUpdatedAt > cloud.settingsUpdatedAt;
 
   return {
@@ -133,185 +186,239 @@ function emptyFinancialData() {
   };
 }
 
-function readSyncOwner() {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      return window.localStorage.getItem(OWNER_KEY);
-    }
-  } catch {
-    // Continue with in-memory ownership in restricted browser contexts.
-  }
-  return memoryOwner;
+function createAbortController() {
+  return typeof AbortController === 'function' ? new AbortController() : null;
 }
 
-function writeSyncOwner(userId) {
-  memoryOwner = userId;
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(OWNER_KEY, userId);
-    }
-  } catch {
-    // The app remains usable even if ownership metadata cannot be persisted.
+function withAbortSignal(query, controller) {
+  if (controller && typeof query?.abortSignal === 'function') {
+    return query.abortSignal(controller.signal);
   }
+  return query;
 }
 
-const memorySnapshots = new Map();
-
-function snapshotKey(userId) {
-  return `financial_memory_sync_snapshot_${userId}`;
-}
-
-function readUserSnapshot(userId) {
-  if (!userId) return null;
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const raw = window.localStorage.getItem(snapshotKey(userId));
-      if (raw) return normalizeFinancialData(JSON.parse(raw));
-    }
-  } catch {
-    // Fall back to the in-memory snapshot when storage is restricted or malformed.
-  }
-  return memorySnapshots.get(userId) || null;
-}
-
-function writeUserSnapshot(userId, data) {
-  if (!userId) return;
-  const snapshot = normalizeFinancialData(data);
-  memorySnapshots.set(userId, snapshot);
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(snapshotKey(userId), JSON.stringify(snapshot));
-    }
-  } catch {
-    // A failed snapshot must not prevent cloud sync or local storage from working.
-  }
+function cancelActiveOperation() {
+  if (!activeOperation) return;
+  // Best-effort only: aborting the local request cannot guarantee that a
+  // server-side write already accepted has been cancelled. Generation checks
+  // keep any stale completion from touching the current session's state.
+  activeOperation.controller?.abort();
+  activeOperation = null;
 }
 
 function scheduleSync(delay = 700) {
-  if (!activeUserId) return;
+  const context = currentContext();
+  if (!context) return;
   if (syncTimer) clearTimeout(syncTimer);
   syncTimer = setTimeout(() => {
     syncTimer = null;
-    void syncNow();
+    if (isCurrent(context)) void syncNow();
   }, delay);
 }
 
-function applyLocalData(data) {
+function applyActiveAccountData(context, data) {
+  if (!isCurrent(context)) return false;
   const current = normalizeFinancialData(store.getData());
   const next = normalizeFinancialData(data);
-  if (JSON.stringify(current) === JSON.stringify(next)) return;
+  if (JSON.stringify(current) === JSON.stringify(next)) return true;
 
   applyingCloudData = true;
   try {
+    // The selected slot was changed synchronously with the auth transition.
+    // Check again immediately before writing so a stale completion cannot
+    // alter a newly selected guest or different-account slot.
+    if (!isCurrent(context)) return false;
     store.saveData(next);
+    return true;
   } finally {
     applyingCloudData = false;
   }
 }
 
-async function performSync(userId) {
+async function readCloudRow(client, context, controller) {
+  const query = withAbortSignal(
+    client
+      .from(TABLE)
+      .select('payload, updated_at')
+      .eq('user_id', context.userId),
+    controller
+  );
+  return query.maybeSingle();
+}
+
+async function writeCloudRow(client, context, payload, controller) {
+  const query = withAbortSignal(
+    client
+      .from(TABLE)
+      .upsert({
+        user_id: context.userId,
+        payload,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'user_id' }),
+    controller
+  );
+  return query;
+}
+
+async function performSync(context, operation) {
   const client = getSupabase();
   if (!client) throw new Error('Supabase client is unavailable. Check your project URL and publishable key.');
 
-  emitState({
+  const isInitialLoad = readyUserId !== context.userId;
+  emitForContext(context, {
     status: 'syncing',
-    message: 'Syncing expenses, savings, and settings…',
-    error: null
+    message: isInitialLoad ? 'Loading cloud data for this account…' : 'Syncing expenses, savings, and settings…',
+    error: null,
+    lastSyncedAt: null
   });
 
-  const { data: cloudRow, error: readError } = await client
-    .from(TABLE)
-    .select('payload, updated_at')
-    .eq('user_id', userId)
-    .maybeSingle();
-
+  const { data: cloudRow, error: readError } = await readCloudRow(client, context, operation.controller);
   if (readError) throw readError;
-  if (activeUserId !== userId) return false;
+  if (!isCurrent(context)) return false;
 
-  let localData = normalizeFinancialData(store.getData());
-  const ownerId = readSyncOwner();
-  let mergedData;
+  if (!cloudRow) {
+    // A missing row is the only new-account signal. Neither guest data nor an
+    // old account cache is used to initialize this account.
+    const initialData = emptyFinancialData();
+    if (!applyActiveAccountData(context, initialData) || !isCurrent(context)) return false;
 
-  if (ownerId && ownerId !== userId) {
-    // Keep the previous account's local copy before switching account data.
-    writeUserSnapshot(ownerId, localData);
-    // Restore this account's last local snapshot (if any), never mix two users' data.
-    localData = readUserSnapshot(userId) || emptyFinancialData();
-    mergedData = cloudRow?.payload
-      ? mergeFinancialData(localData, cloudRow.payload)
-      : localData;
-  } else if (cloudRow?.payload) {
-    // On first sign-in, merge guest records into the account; on later syncs,
-    // merge by stable IDs and carry tombstones so deletions propagate.
-    mergedData = mergeFinancialData(localData, cloudRow.payload);
-  } else {
-    // First sync for this account: preserve and upload the current local data.
-    mergedData = localData;
+    const { error: writeError } = await writeCloudRow(client, context, initialData, operation.controller);
+    if (writeError) throw writeError;
+    if (!isCurrent(context)) return false;
+
+    readyUserId = context.userId;
+    emitForContext(context, {
+      status: 'synced',
+      message: 'A new, empty cloud account was initialized.',
+      error: null,
+      lastSyncedAt: new Date().toISOString()
+    });
+    return true;
   }
 
-  applyLocalData(mergedData);
+  const validated = validateFinancialDataPayload(cloudRow.payload);
+  if (!validated.valid) {
+    throw new Error('Cloud data was not applied: ' + validated.error);
+  }
+  if (!isCurrent(context)) return false;
 
-  const { error: writeError } = await client
-    .from(TABLE)
-    .upsert({
-      user_id: userId,
-      payload: mergedData,
-      updated_at: new Date().toISOString()
-    }, { onConflict: 'user_id' });
+  if (isInitialLoad) {
+    // Existing accounts load the confirmed cloud payload exactly as stored.
+    // Do not merge the guest slot or silently rewrite a valid cloud record.
+    if (!applyActiveAccountData(context, validated.data) || !isCurrent(context)) return false;
+    readyUserId = context.userId;
+    emitForContext(context, {
+      status: 'synced',
+      message: 'Cloud data loaded for this account.',
+      error: null,
+      lastSyncedAt: cloudRow.updated_at || new Date().toISOString()
+    });
+    return true;
+  }
 
+  // A subsequent sync can reconcile only this account's local cache with its
+  // own cloud row. The active slot is account-specific, never guest data.
+  const mergedData = mergeFinancialData(store.getData(), validated.data);
+  if (!applyActiveAccountData(context, mergedData) || !isCurrent(context)) return false;
+
+  const { error: writeError } = await writeCloudRow(client, context, mergedData, operation.controller);
   if (writeError) throw writeError;
-  if (activeUserId !== userId) return false;
+  if (!isCurrent(context)) return false;
 
-  writeSyncOwner(userId);
-  writeUserSnapshot(userId, mergedData);
-  readyUserId = userId;
-  const lastSyncedAt = new Date().toISOString();
-  emitState({
+  emitForContext(context, {
     status: 'synced',
-    message: 'Your expenses, savings, and settings are synced to your account.',
+    message: 'Your expenses, savings, and settings are synced to this account.',
     error: null,
-    lastSyncedAt
+    lastSyncedAt: new Date().toISOString()
   });
   return true;
 }
 
 export async function syncNow() {
-  const userId = activeUserId;
-  if (!userId) {
+  if (syncTimer) {
+    clearTimeout(syncTimer);
+    syncTimer = null;
+  }
+  const context = currentContext();
+  if (!context) {
     emitState({
       status: 'guest',
       message: 'Sign in with Google to enable cloud sync.',
-      error: null
+      error: null,
+      lastSyncedAt: null,
+      userId: null
     });
     return false;
   }
 
-  if (syncPromise) {
-    rerunRequested = true;
-    return syncPromise;
+  if (activeOperation && activeOperation.context.userId === context.userId && activeOperation.context.generation === context.generation) {
+    activeOperation.rerunRequested = true;
+    return activeOperation.promise;
   }
 
-  const task = performSync(userId)
+  const operation = {
+    context,
+    controller: createAbortController(),
+    rerunRequested: false,
+    promise: null
+  };
+  const task = performSync(context, operation)
     .catch(error => {
-      console.error('Cloud sync failed:', error);
-      emitState({
-        status: 'error',
-        message: 'Cloud sync failed. Your local data remains available on this device.',
-        error: error?.message || 'Unknown cloud sync error'
-      });
+      // An aborted or superseded request is intentionally silent. It belongs
+      // to a session that is no longer active and cannot update its UI state.
+      if (isCurrent(context)) {
+        console.error('Cloud sync failed:', error);
+        emitForContext(context, {
+          status: 'error',
+          message: 'Cloud sync failed. The cloud update was not confirmed; your local data remains available on this device.',
+          error: error?.message || 'Unknown cloud sync error',
+          lastSyncedAt: null
+        });
+      }
       return false;
     });
+  operation.promise = task;
+  activeOperation = operation;
 
-  syncPromise = task;
   try {
     return await task;
   } finally {
-    if (syncPromise === task) syncPromise = null;
-    if (rerunRequested && activeUserId) {
-      rerunRequested = false;
-      scheduleSync(100);
+    if (activeOperation === operation) {
+      activeOperation = null;
+      if (operation.rerunRequested && isCurrent(context)) scheduleSync(100);
     }
   }
+}
+
+function transitionToGuest() {
+  activeGeneration += 1;
+  cancelActiveOperation();
+  readyUserId = null;
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = null;
+  activeUserId = null;
+  // This immediately removes authenticated data and starts a clean guest
+  // session; it never restores a prior guest dataset and never touches the
+  // account's cloud row.
+  store.resetGuestSlot();
+  emitState({
+    status: 'guest',
+    message: 'Sign in with Google to enable cloud sync.',
+    error: null,
+    lastSyncedAt: null,
+    userId: null
+  });
+}
+
+function transitionToAccount(userId) {
+  activeGeneration += 1;
+  cancelActiveOperation();
+  readyUserId = null;
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = null;
+  activeUserId = userId;
+  // Switch before the read starts: guest/A data is never shown as user B.
+  store.activateAccountSlot(userId);
 }
 
 function handleAuthState(authState) {
@@ -319,40 +426,33 @@ function handleAuthState(authState) {
 
   if (!userId) {
     if (authState?.isLoading) {
-      emitState({ status: 'checking', message: 'Checking your account session…', error: null });
+      // Do not display a cached account while the session is being restored.
+      // The guest slot is already active, so no account data can be shown.
+      if (!activeUserId) {
+        emitState({ status: 'checking', message: 'Checking your account session…', error: null, lastSyncedAt: null, userId: null });
+      }
       return;
     }
-
-    activeUserId = null;
-    readyUserId = null;
-    initializingUserId = null;
-    if (syncTimer) clearTimeout(syncTimer);
-    syncTimer = null;
-    emitState({
-      status: 'guest',
-      message: 'Sign in with Google to enable cloud sync.',
-      error: null
-    });
+    if (activeUserId) {
+      transitionToGuest();
+    } else {
+      // Initial unauthenticated startup and repeated guest notifications must
+      // retain the persisted guest slot. Only an account-to-guest transition
+      // starts a clean guest session.
+      emitState({
+        status: 'guest',
+        message: 'Sign in with Google to enable cloud sync.',
+        error: null,
+        lastSyncedAt: null,
+        userId: null
+      });
+    }
     return;
   }
 
-  if (activeUserId !== userId) {
-    activeUserId = userId;
-    readyUserId = null;
-    initializingUserId = null;
-    if (syncTimer) clearTimeout(syncTimer);
-    syncTimer = null;
-  }
-
-  if (readyUserId === userId || initializingUserId === userId) return;
-  if (syncPromise) {
-    rerunRequested = true;
-    return;
-  }
-  initializingUserId = userId;
-  void syncNow().finally(() => {
-    if (initializingUserId === userId) initializingUserId = null;
-  });
+  if (activeUserId !== userId) transitionToAccount(userId);
+  if (readyUserId === userId) return;
+  void syncNow();
 }
 
 export function initCloudSync() {
@@ -360,9 +460,7 @@ export function initCloudSync() {
   initialized = true;
 
   storeUnsubscribe = store.subscribe(() => {
-    if (!applyingCloudData && activeUserId && readyUserId === activeUserId) {
-      scheduleSync();
-    }
+    if (!applyingCloudData && activeUserId && readyUserId === activeUserId) scheduleSync();
   });
 
   authUnsubscribe = subscribeAuth(handleAuthState);
@@ -374,3 +472,41 @@ export function initCloudSync() {
   }
 }
 
+// Test-only lifecycle controls let Node tests model Supabase auth transitions
+// deterministically while keeping the browser-facing API small.
+
+/** Applies an auth transition and awaits the sync it started, if any. */
+export async function handleCloudSyncAuthStateForTesting(authState) {
+  handleAuthState({ isLoading: false, ...authState });
+  const operation = activeOperation;
+  return operation ? await operation.promise : false;
+}
+
+/** Applies an auth transition without awaiting any resulting sync. */
+export function setCloudSyncAuthStateForTesting(authState) {
+  handleAuthState({ isLoading: false, ...authState });
+}
+
+/** Resets module state between isolated cloud-sync tests. */
+export function resetCloudSyncForTesting() {
+  activeGeneration += 1;
+  cancelActiveOperation();
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = null;
+  storeUnsubscribe?.();
+  authUnsubscribe?.();
+  storeUnsubscribe = null;
+  authUnsubscribe = null;
+  initialized = false;
+  activeUserId = null;
+  readyUserId = null;
+  applyingCloudData = false;
+  listeners.clear();
+  syncState = {
+    status: 'idle',
+    message: 'Cloud sync has not started.',
+    error: null,
+    lastSyncedAt: null,
+    userId: null
+  };
+}

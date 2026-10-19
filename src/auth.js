@@ -33,6 +33,15 @@ export function resetSupabaseClientForTesting() {
 }
 
 /**
+ * Supplies a fake client to cloud-sync tests without configuring a real
+ * Supabase project. It is intentionally test-only and is never used by app
+ * initialization.
+ */
+export function setSupabaseClientForTesting(client) {
+  supabaseClient = client;
+}
+
+/**
  * Checks whether Supabase is configured with a valid URL and publishable anon key.
  */
 export function isSupabaseConfigured() {
@@ -263,16 +272,24 @@ export async function signInWithGoogle() {
 
 /**
  * Signs the user out from Supabase Auth and returns the application to Guest mode.
- * Crucially: guest local data in localStorage is kept intact and unmodified.
+ * This function itself never mutates stored datasets: the cloud-sync lifecycle
+ * reacts to the auth update by hiding the account cache and selecting a clean
+ * guest session. The account's cloud copy is never deleted by signing out.
  */
 export async function signOut() {
   authError = null;
 
   const client = getSupabase();
+  // Move the application to guest mode before waiting for a network round
+  // trip. The Supabase client still holds the token needed to finish its own
+  // sign-out request, while subscribers can immediately swap away from the
+  // authenticated account's data. The account's cloud copy is never deleted
+  // by signing out.
+  currentSession = null;
+  currentUser = null;
+  notifyAuth();
+
   if (!client) {
-    currentSession = null;
-    currentUser = null;
-    notifyAuth();
     return;
   }
 
@@ -283,9 +300,5 @@ export async function signOut() {
     }
   } catch (err) {
     console.warn('Error during sign out:', err);
-  } finally {
-    currentSession = null;
-    currentUser = null;
-    notifyAuth();
   }
 }

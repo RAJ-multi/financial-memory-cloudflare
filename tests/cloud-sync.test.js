@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeFinancialData, normalizeFinancialData } from '../src/cloud-sync.js';
+import { mergeFinancialData, normalizeFinancialData, validateFinancialDataPayload } from '../src/cloud-sync.js';
 
 test('normalizes sync metadata and keeps existing records', () => {
   const data = normalizeFinancialData({
@@ -50,4 +50,26 @@ test('newer settings win during conflict resolution', () => {
     { settings: { currency: 'USD' }, settingsUpdatedAt: 400, expenses: [], savings: [] }
   );
   assert.equal(merged.settings.currency, 'INR');
+});
+
+test('rejects malformed and unsupported cloud payloads instead of normalizing them to empty data', () => {
+  assert.equal(validateFinancialDataPayload(null).valid, false);
+  assert.equal(validateFinancialDataPayload('not-an-object').valid, false);
+  assert.equal(validateFinancialDataPayload([]).valid, false);
+  assert.equal(validateFinancialDataPayload({ version: 2, settings: {}, expenses: [], savings: [] }).valid, false);
+  assert.equal(validateFinancialDataPayload({ version: 1, settings: {}, expenses: 'not-an-array', savings: [] }).valid, false);
+  assert.equal(validateFinancialDataPayload({ version: 1, settings: {}, expenses: [{ amount: 5 }], savings: [] }).valid, false);
+  assert.equal(validateFinancialDataPayload({ version: 1, settings: {}, expenses: [], savings: [], deletedExpenseIds: [42] }).valid, false);
+
+  // Older payloads without deletion metadata remain accepted.
+  const valid = validateFinancialDataPayload({
+    version: 1,
+    settings: { currency: 'USD' },
+    expenses: [{ id: 'e1', amount: 5 }],
+    savings: []
+  });
+  assert.equal(valid.valid, true);
+  assert.deepEqual(valid.data.expenses.map(item => item.id), ['e1']);
+  assert.deepEqual(valid.data.deletedExpenseIds, []);
+  assert.deepEqual(valid.data.deletedSavingIds, []);
 });

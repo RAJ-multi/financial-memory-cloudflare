@@ -764,10 +764,12 @@ export function renderSettings(data, hasWallpaper = false, wallpaperUrl = null, 
     <div class="card" style="border-color: var(--danger);">
       <h2 style="font-size: 1.15rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--danger);">Local Data & Privacy</h2>
       <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">
-        Financial Memory is local-first. All entries and budgets are stored exclusively in your browser. There are no accounts, cloud sync, or external servers.
+        ${isGuest
+          ? 'Financial Memory stores guest entries on this device. Sign in to sync entries and settings to your account.'
+          : 'Financial Memory keeps a local cache on this device and syncs entries and settings to your signed-in account.'}
       </p>
       <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem;">
-        Deleting all local data permanently deletes all locally recorded expenses, saving contributions, and the daily budget.
+        This clears this device\'s local dataset. It does not delete synced account records, which may reappear after syncing.
       </p>
       <button class="btn btn-danger btn-sm" id="btn-trigger-delete-all">Delete All Local Data</button>
     </div>

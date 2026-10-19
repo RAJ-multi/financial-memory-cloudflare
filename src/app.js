@@ -474,7 +474,7 @@ function bindSettingsEvents() {
     btnDeleteAll.addEventListener('click', () => {
       showConfirmation(
         'Delete All Local Data',
-        'Permanently delete all locally stored expenses, saving contributions, and daily budget targets? This cannot be undone.',
+        'Clear this browser\'s local expenses, saving contributions, and daily budget target? Synced account records are not deleted and may reappear after you sign in or sync.',
         () => {
           store.deleteAllLocalData();
           showToast('All local data cleared. Preferences preserved.');
