@@ -1,38 +1,109 @@
-# Financial Memory
+# 💸 Financial Memory
 
-A local-first personal finance tracker for students, with historical spending insights, savings tracking, Google authentication, and optional per-account cloud synchronization.
+### Your spending has a story. Find it.
 
-## Cloudflare Pages deployment
+**Financial Memory** is a student-focused expense tracker built to help you understand where your money goes, spot spending patterns, and make more informed everyday decisions.
 
-- **Framework preset:** None
-- **Build command:** `npm run build`
-- **Build output directory:** `dist`
-- **Root directory:** leave blank
-- **Production branch:** `main`
+Instead of drowning you in charts and complicated financial jargon, it focuses on a simple question:
 
-Set these variables under Cloudflare Pages → Settings → Variables and Secrets for Production (and Preview if you use preview deployments):
+**Where did my money actually go?**
 
-- `SUPABASE_URL`: the base Supabase project URL (for example, `https://your-project.supabase.co`; do not append `/rest/v1/`)
-- `SUPABASE_ANON_KEY`: your public Supabase publishable/anon key
+---
 
-Never put a Supabase service-role key or database password in frontend code or these public configuration values.
+## ✨ Features
 
-## Enable cloud synchronization
+- 📊 **Spending Dashboard** — See today's spending, your remaining daily budget, and monthly category breakdowns.
+- 🗓️ **Monthly History** — Explore recorded expenses and understand your spending over time.
+- 🧠 **Ask Financial Memory** — Get answers to supported spending questions using your recorded transaction history.
+- 💰 **Daily Budget Context** — Understand your spending in relation to your daily budget.
+- ☁️ **Cloud Sync** — Sign in with Google and keep your financial data associated with your account.
+- 🔐 **Account Isolation** — Keep account data separate, with guest activity isolated from authenticated accounts.
+- 🎨 **Personalization** — Choose light or dark mode and customize the app's background.
+- 📱 **Responsive Interface** — Track expenses across desktop and mobile-sized screens.
 
-1. Open the Supabase project associated with this deployment.
-2. In the Supabase SQL Editor, run the migration at `supabase/migrations/20261011000000_financial_memory_cloud.sql`.
-3. Make sure Google authentication is enabled and the app's deployment URLs are allowed in Supabase Authentication → URL Configuration.
-4. Deploy the application and sign in with Google. In Settings, check the Cloud sync status or use **Sync now**.
+## 🎯 Why Financial Memory?
 
-The migration creates `public.financial_memory_cloud` with row-level security. Policies restrict each signed-in user to their own row. The app stores one JSON payload per user, including expenses, savings, settings, record update timestamps, and deletion markers used during merges.
+Tracking expenses is easy to postpone when an app feels complicated. Financial Memory aims to make reviewing spending more approachable, especially for students managing everyday expenses.
 
-## How sync behaves
+Its guiding principle is simple:
 
-- Guest mode continues to use local browser storage.
-- On first sign-in, local records are merged with any cloud records for that user.
-- After sign-in, updates are sent to Supabase automatically after a short debounce; a manual **Sync now** action is available in Settings.
-- Records merge by ID and latest update time; deletion markers help prevent deleted records from reappearing on another device.
-- Local data remains available if a sync request fails. Keep backups of important records; cloud sync is not a substitute for a backup strategy.
-- Custom wallpaper image blobs stored in IndexedDB are not included in cloud sync.
+> Financial insights should come from your actual records, not invented numbers.
 
-Run the automated tests with `npm test` and a production build with `npm run build`.
+The app focuses on supported questions that can be answered from recorded transaction data, with honest handling of empty or unsupported results.
+
+## 🛠️ Built With
+
+- **Frontend:** HTML, CSS, JavaScript
+- **Build Tool:** Vite
+- **Authentication & Database:** Supabase
+- **Deployment:** Cloudflare Pages
+- **Version Control:** Git and GitHub
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- Node.js and npm
+- A Supabase project configured for the application
+
+### Installation
+
+```bash
+git clone https://github.com/RAJ-multi/financial-memory-cloudflare.git
+cd financial-memory-cloudflare
+npm install
+```
+
+Create a local `.env` file using the environment variables expected by the application. Configure your Supabase project, authentication provider, database schema, and access policies according to the project setup.
+
+**Never commit secrets or private environment files.**
+
+### Run locally
+
+```bash
+npm run dev
+```
+
+### Run tests
+
+```bash
+npm test
+```
+
+### Production build
+
+```bash
+npm run build
+```
+
+## 🔒 Privacy & Data Handling
+
+Financial Memory separates guest data from authenticated account data. Signing into an account should load that account's data rather than merge guest expenses into it.
+
+Cloud synchronization depends on the configured Supabase service and its access policies. As with any cloud-connected application, users should understand where their data is stored and protect access to their accounts.
+
+*Google authentication is not the same as end-to-end encryption.*
+
+## 🧪 Project Quality
+
+The project includes automated tests for important cloud-sync and account-lifecycle behavior, including account switching, guest isolation, and read/write failure handling.
+
+The test suite and production build have passed in the development environment. Real-world reliability still depends on the deployed configuration and ongoing testing.
+
+## 🗺️ Scope
+
+Financial Memory is currently focused on student expense tracking and supported spending-history questions.
+
+Potential future directions include additional query types, richer historical analysis, more currency options, and expanded transaction-management capabilities.
+
+These are possible future improvements, not promises about current functionality.
+
+## 👨‍💻 Created By
+
+**Raj** — Student developer exploring practical web development, cloud-backed applications, and AI-assisted development.
+
+Built as a project for the **Build With AI: Basics** hackathon.
+
+---
+
+*Remember your spending. Understand your patterns. Make your next decision with more context.*
